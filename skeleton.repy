@@ -1,0 +1,92 @@
+# Make one string from list of messages
+def get_messages():
+  return '\n<br />'.join(mycontext['messages'])
+
+# Send message to all neighbouring nodes
+def send_to_nodes(message):
+  for node in mycontext['nodes']:
+    socket = openconn(node, mycontext['port'])
+
+    socket.send("POST /index.html HTTP/1.1\r\nHost: www.google.com\r\ncomment="+message+"\r\n\r\n")
+
+    socket.close()
+
+# Generate HTML for the board with messages
+def get_html():
+  htmlresponse = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta content="text/html; charset=utf-8" http-equiv="content-type">
+  <title>Blackboard GroupName</title>
+</head>
+<body>
+  <h2> Board Content</h2>
+  <p>"""+get_messages()+"""</p>
+  <br>
+  <h3>Submit to board<h3>
+  <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+  <form action="" id="usrform" method="post">
+  <input type="submit">
+  </form>
+</body>
+</html>
+"""
+  return htmlresponse
+
+# Generate HTTP-request with page content
+def get_raw_page():
+  htmlresponse = get_html()
+  httpresponse = "HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse)
+  return httpresponse
+
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader = sockobj.recv(1024) # Receive message, 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  print msgheader
+  if msgheader.startswith( 'GET' ):
+    sockobj.send(get_raw_page())
+    stopcomm(thiscommhandle)
+
+  elif msgheader.startswith( 'POST' ):
+    # Parse out comment and save
+    word = "comment="
+    message = msgheader[msgheader.find(word)+len(word):]
+    mycontext['messages'].append(message)
+
+    sockobj.send(get_raw_page())
+    stopcomm(thiscommhandle)
+
+    if ip not in mycontext['nodes']:
+      send_to_nodes(message)
+
+  else:
+  	print "FEEL FREE TO CHANGE THE CODE"
+    
+	
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+    mycontext['port'] = port
+    mycontext['messages'] = []
+    mycontext['nodes'] = []
+
+    ipfile = open("ipaddresses.txt", "r")
+    for line in ipfile:
+      line = line.rstrip()
+      if line != ip:
+        mycontext['nodes'].append(line)
+
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,port,board)
