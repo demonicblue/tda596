@@ -1,0 +1,139 @@
+# Make one string from list of messages
+def get_messages():
+  return '\n<br />'.join(mycontext['messages'])
+
+# Send message to all neighbouring nodes
+def send_to_nodes(message):
+  for node in mycontext['nodes']:
+    socket = openconn(node, mycontext['port'])
+
+    socket.send("POST /index.html HTTP/1.1\r\nHost: www.google.com\r\ncomment="+message+"\r\n\r\n")
+
+    socket.close()
+
+# Generate HTML for the board with messages
+def get_html():
+  htmlresponse = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta content="text/html; charset=utf-8" http-equiv="content-type">
+  <title>Blackboard Group 31</title>
+</head>
+<body>
+  <h2> Board Content</h2>
+  <p>Leader: """+mycontext['leader']+"""</p>
+  <p>"""+get_messages()+"""</p>
+  <br>
+  <h3>Submit to board<h3>
+  <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+  <form action="" id="usrform" method="post">
+  <input type="submit">
+  </form>
+</body>
+</html>
+"""
+  return htmlresponse
+
+# Generate HTTP-request with page content
+def get_raw_page():
+  htmlresponse = get_html()
+  httpresponse = "HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse)
+  return httpresponse
+
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  msgheader = sockobj.recv(1024) # Receive message, 
+  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  if msgheader.startswith( 'GET' ):
+    sockobj.send(get_raw_page())
+
+  elif msgheader.startswith( 'POST' ):
+    # Parse out comment and save
+    word = "comment="
+    message = msgheader[msgheader.find(word)+len(word):]
+    mycontext['messages'].append(message)
+
+    sockobj.send(get_raw_page())
+
+    if ip not in mycontext['nodes']:
+      send_to_nodes(message)
+
+  elif msgheader.startswith( 'Leader:' ):
+    candidate = msgheader.replace('Leader:','')
+    if candidate > mycontext['leader']:
+      mycontext['leader'] = candidate
+      send_to_neighbor(msgheader)
+
+  else:
+    print 'board: '+msgheader
+
+  stopcomm(thiscommhandle)
+
+# insert comment
+def leaderelection(ip, port, sockobj, thiscommhandle, listencommhandle):
+    msgheader = sockobj.recv(1024) # Receive message,
+    if msgheader.startswith('Leader:'):
+      candidate = msgheader.replace('Leader:','')
+      myip = getmyip()
+      print candidate
+      if candidate == myip:
+        stopcomm(listencommhandle)
+        waitforconn(getmyip(),mycontext['port'],board)
+      elif candidate > mycontext['leader']:
+        mycontext['leader'] = candidate
+      sendmessage(msgheader)
+    stopcomm(thiscommhandle)
+
+def send_to_neighbor(message):
+  counter = 5
+  while counter > 0:
+    try:
+       socket = openconn(mycontext['ringneighbor'], mycontext['port'])
+       socket.send(message)
+       socket.close()
+       return
+    except Exception, e:
+      if str(e).find('Connection refused') >= 0:
+        counter -= 1
+        sleep(1)
+  print getmyip() + ' Exiting'
+  exitall()
+
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+    mycontext['port'] = port
+    mycontext['messages'] = []
+    mycontext['nodes'] = []
+
+    ipfile = open("ipaddresses.txt", "r")
+    for line in ipfile:
+      line = line.rstrip()
+      #if line != ip:
+      mycontext['nodes'].append(line)
+
+    myix = mycontext['nodes'].index(ip)
+    mycontext['ringneighbor'] = mycontext['nodes'][myix - 1]
+    
+    mycontext['leader'] = ip
+
+    listencommhandle = waitforconn(ip,port,board)
+
+    send_to_neighbor('Leader:'+ip)
+   
+    
+       
+
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  listencommhandle = waitforconn(ip,port,board)
