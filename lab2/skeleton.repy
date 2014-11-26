@@ -70,10 +70,16 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
 
       #if ip not in mycontext['nodes']:
       send_to_nodes(message)
-    else:
+    elif ip != mycontext['leaderip']:
       sockobj.send(get_raw_page())
       stopcomm(thiscommhandle)
       send_to_node(mycontext['leaderip'], msgheader)
+    else:
+      # Parse out comment and save
+      word = "comment="
+      message = msgheader[msgheader.find(word)+len(word):]
+      mycontext['messages'].append(message)
+      stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'Leader:' ):
     stopcomm(thiscommhandle)
