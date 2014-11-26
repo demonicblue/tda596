@@ -5,11 +5,13 @@ def get_messages():
 # Send message to all neighbouring nodes
 def send_to_nodes(message):
   for node in mycontext['nodes']:
-    socket = openconn(node, mycontext['port'])
+    if node != getmyip():
+      socket = openconn(node, mycontext['port'])
 
-    socket.send("POST /index.html HTTP/1.1\r\nHost: www.google.com\r\ncomment="+message+"\r\n\r\n")
+      #todo: add exception handling
+      socket.send("POST /index.html HTTP/1.1\r\nHost: www.google.com\r\ncomment="+message+"\r\n\r\n")
 
-    socket.close()
+      socket.close()
 
 # Generate HTML for the board with messages
 def get_html():
@@ -22,14 +24,15 @@ def get_html():
 </head>
 <body>
   <h2> Board Content</h2>
-  <p>Leader: """+mycontext['leader']+"""</p>
   <p>"""+get_messages()+"""</p>
   <br>
-  <h3>Submit to board<h3>
+  <h3>Submit to board</h3>
   <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
   <form action="" id="usrform" method="post">
   <input type="submit">
   </form>
+  <p>My ID: """+mycontext['myid']+"""</p>
+  <p>Leader: """+mycontext['leaderid']+' '+mycontext['leaderip']+"""</p>
 </body>
 </html>
 """
@@ -43,34 +46,50 @@ def get_raw_page():
   return httpresponse
 
 def board(ip, port, sockobj, thiscommhandle, listencommhandle):
-  msgheader = sockobj.recv(1024) # Receive message, 
+  #todo: add exception handling
+  msgheader = ''
+  try:
+    msgheader = sockobj.recv(1024) # Receive message, 
+  except Exception, e:
+    print str(e)
+
   # React depending on message type: HTTP GET or POST, or some other type of communication.
   if msgheader.startswith( 'GET' ):
     sockobj.send(get_raw_page())
+    stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'POST' ):
-    # Parse out comment and save
-    word = "comment="
-    message = msgheader[msgheader.find(word)+len(word):]
-    mycontext['messages'].append(message)
+    if mycontext['leaderip'] == getmyip():
+      # Parse out comment and save
+      word = "comment="
+      message = msgheader[msgheader.find(word)+len(word):]
+      mycontext['messages'].append(message)
 
-    sockobj.send(get_raw_page())
+      sockobj.send(get_raw_page())
+      stopcomm(thiscommhandle)
 
-    if ip not in mycontext['nodes']:
+      #if ip not in mycontext['nodes']:
       send_to_nodes(message)
+    else:
+      sockobj.send(get_raw_page())
+      stopcomm(thiscommhandle)
+      send_to_node(mycontext['leaderip'], msgheader)
 
   elif msgheader.startswith( 'Leader:' ):
-    candidate = msgheader.replace('Leader:','')
-    if candidate > mycontext['leader']:
-      mycontext['leader'] = candidate
-      send_to_neighbor(msgheader)
+    stopcomm(thiscommhandle)
+    candidateid = msgheader.split('IP:')[0].replace('Leader:','')
+    candidateip = msgheader.split('IP:')[1]
+    if candidateid > mycontext['leaderid'] or (candidateid == mycontext['leaderid'] and candidateip > getmyip()):
+      mycontext['leaderid'] = candidateid
+      mycontext['leaderip'] = candidateip
+      send_to_node(mycontext['ringneighbour'], msgheader)
+      #todo: determine when election is over?
 
   else:
-    print 'board: '+msgheader
+    print 'unkown message: '+msgheader+' from '+str(ip)+':'+str(port)
+    stopcomm(thiscommhandle)
 
-  stopcomm(thiscommhandle)
-
-# insert comment
+# no longer used
 def leaderelection(ip, port, sockobj, thiscommhandle, listencommhandle):
     msgheader = sockobj.recv(1024) # Receive message,
     if msgheader.startswith('Leader:'):
@@ -80,24 +99,28 @@ def leaderelection(ip, port, sockobj, thiscommhandle, listencommhandle):
       if candidate == myip:
         stopcomm(listencommhandle)
         waitforconn(getmyip(),mycontext['port'],board)
-      elif candidate > mycontext['leader']:
-        mycontext['leader'] = candidate
+      elif candidate > mycontext['leaderid']:
+        mycontext['leaderid'] = candidate
       sendmessage(msgheader)
     stopcomm(thiscommhandle)
 
-def send_to_neighbor(message):
+#write comment
+def send_to_node(ip, message):
   counter = 5
   while counter > 0:
+    socket = None
     try:
-       socket = openconn(mycontext['ringneighbor'], mycontext['port'])
+       socket = openconn(ip, mycontext['port'])
        socket.send(message)
        socket.close()
        return
     except Exception, e:
       if str(e).find('Connection refused') >= 0:
+        if socket:
+          socket.close()
         counter -= 1
         sleep(1)
-  print getmyip() + ' Exiting'
+  print getmyip() + ' Exiting' #debug
   exitall()
 
 if callfunc == 'initialize':
@@ -120,20 +143,20 @@ if callfunc == 'initialize':
       mycontext['nodes'].append(line)
 
     myix = mycontext['nodes'].index(ip)
-    mycontext['ringneighbor'] = mycontext['nodes'][myix - 1]
+    mycontext['ringneighbour'] = mycontext['nodes'][myix - 1]
     
-    mycontext['leader'] = ip
+    #mycontext['myid'] = str(500)
+    mycontext['myid'] = str( int( randomfloat() * 1000 ) )
+    mycontext['leaderid'] = mycontext['myid']
+    mycontext['leaderip'] = ip
 
     listencommhandle = waitforconn(ip,port,board)
 
-    send_to_neighbor('Leader:'+ip)
-   
-    
-       
+    send_to_node(mycontext['ringneighbour'], 'Leader:'+mycontext['myid']+'IP:'+ip)
 
   # Running locally:
   # whenever we get a connection on 127.0.0.1:12345 we'll call board
   else:
     port = 12345
     ip = '127.0.0.1'
-  listencommhandle = waitforconn(ip,port,board)
+    listencommhandle = waitforconn(ip,port,board)
