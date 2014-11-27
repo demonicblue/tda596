@@ -2,16 +2,14 @@
 def get_messages():
   return '\n<br />'.join(mycontext['messages'])
 
-# Send message to all neighbouring nodes
+# Send message to all other nodes
 def send_to_nodes(message):
   for node in mycontext['nodes']:
     if node != getmyip():
-      socket = openconn(node, mycontext['port'])
-
-      #todo: add exception handling
-      socket.send("POST /index.html HTTP/1.1\r\nHost: www.google.com\r\ncomment="+message+"\r\n\r\n")
-
-      socket.close()
+      #socket = openconn(node, mycontext['port'])
+      #socket.send(message)
+      #socket.close()
+      send_to_node(node, message)
 
 # Generate HTML for the board with messages
 def get_html():
@@ -31,8 +29,9 @@ def get_html():
   <form action="" id="usrform" method="post">
   <input type="submit">
   </form>
-  <p>My ID: """+mycontext['myid']+"""</p>
-  <p>Leader: """+mycontext['leaderid']+' '+mycontext['leaderip']+"""</p>
+  <p>My ID: """+str(mycontext['myid'])+"""</p>
+  <p>Leader: """+str(mycontext['leaderid'])+' '+str(mycontext['leaderip'])+"""
+  </p>
 </body>
 </html>
 """
@@ -46,72 +45,107 @@ def get_raw_page():
   return httpresponse
 
 def board(ip, port, sockobj, thiscommhandle, listencommhandle):
-  #todo: add exception handling
+  # Used to handle potential errors on recv to keep node from crashing
   msgheader = ''
   try:
     msgheader = sockobj.recv(1024) # Receive message, 
   except Exception, e:
-    print str(e)
+    print 'Exception: '+str(e)
+    stopcomm(thiscommhandle)
 
-  # React depending on message type: HTTP GET or POST, or some other type of communication.
+  # React depending on message type: HTTP GET or POST, Leader election,
+  # message from leader or some other type of communication.
+
   if msgheader.startswith( 'GET' ):
+    # Return blackboard
     sockobj.send(get_raw_page())
     stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'POST' ):
+    # If this node is the leader it should add the message contained in the
+    # POST to the board and send the message to all other nodes
     if mycontext['leaderip'] == getmyip():
       # Parse out comment and save
       word = "comment="
       message = msgheader[msgheader.find(word)+len(word):]
-      mycontext['messages'].append(message)
 
+      # Try to acquire the lock before adding mesage to the board
+      mycontext['lock'].acquire()
+      mycontext['messages'].append(message)      
+
+      # Return blackboard
       sockobj.send(get_raw_page())
       stopcomm(thiscommhandle)
 
-      #if ip not in mycontext['nodes']:
-      send_to_nodes(message)
-    elif ip != mycontext['leaderip']:
-      sockobj.send(get_raw_page())
-      stopcomm(thiscommhandle)
-      send_to_node(mycontext['leaderip'], msgheader)
+      send_to_nodes('Message:'+message)
+
+      # Release the lock _after_ sending the message to all other nodes
+      mycontext['lock'].release()
+
+    # If this node is not the leader, forward the message to the leader
     else:
-      # Parse out comment and save
-      word = "comment="
-      message = msgheader[msgheader.find(word)+len(word):]
-      mycontext['messages'].append(message)
+      # Return blackboard
+      sockobj.send(get_raw_page())
       stopcomm(thiscommhandle)
 
-  elif msgheader.startswith( 'Leader:' ):
+      # If a leader has been elected, forward the message to it
+      if mycontext['leaderid']:
+        send_to_node(mycontext['leaderip'], msgheader)
+      else:
+        print 'Leader election not done'
+
+  # Add new message from the leader (if actually from leader)
+  elif msgheader.startswith( 'Message:') and ip == mycontext['leaderip']:
+    # Parse out comment and save
+      word = "Message:"
+      message = msgheader[len(word):]
+
+      # Try to acquire the lock before adding mesage to the board
+      mycontext['lock'].acquire()
+      mycontext['messages'].append(message)
+      mycontext['lock'].release()
+
+      stopcomm(thiscommhandle)
+
+  # Process leader election message (if from participating node, adds some
+  # security, only used because we already have a list of all nodes)
+  elif msgheader.startswith( 'Leader:' ) and ip in mycontext['nodes']:
     stopcomm(thiscommhandle)
-    candidateid = msgheader.split('IP:')[0].replace('Leader:','')
-    candidateip = msgheader.split('IP:')[1]
-    if candidateid > mycontext['leaderid'] or (candidateid == mycontext['leaderid'] and candidateip > getmyip()):
+
+    # Parse election data
+    electiondata = msgheader.split(':')
+    initiator = electiondata[1]
+    candidateid = int(electiondata[2])
+    candidateip = electiondata[3]
+
+    # If this node is the initiator the message has passed the entire ring and
+    # contains the leader
+    if initiator == getmyip():
+      mycontext['lock'].acquire()
       mycontext['leaderid'] = candidateid
       mycontext['leaderip'] = candidateip
-      send_to_node(mycontext['ringneighbour'], msgheader)
-      #todo: determine when election is over?
+      mycontext['lock'].release()
+    # Otherwise the node compares the candidate with itself, if the id of this
+    # node is larger than the candidate (or has higher ip in case of a tie)
+    # the node will place itself as the candidate. It then sends the message
+    # to the next node in the ring
+    else:
+      if mycontext['myid'] > candidateid or (candidateid == mycontext['myid']
+        and getmyip() > candidateip):
+        candidateid = mycontext['myid']
+        candidateip = getmyip()
+      send_to_node(mycontext['ringneighbour'], (
+        'Leader:'+initiator+':'+str(candidateid)+':'+candidateip))
 
+  # Other type of message
   else:
     print 'unkown message: '+msgheader+' from '+str(ip)+':'+str(port)
     stopcomm(thiscommhandle)
 
-# no longer used
-def leaderelection(ip, port, sockobj, thiscommhandle, listencommhandle):
-    msgheader = sockobj.recv(1024) # Receive message,
-    if msgheader.startswith('Leader:'):
-      candidate = msgheader.replace('Leader:','')
-      myip = getmyip()
-      print candidate
-      if candidate == myip:
-        stopcomm(listencommhandle)
-        waitforconn(getmyip(),mycontext['port'],board)
-      elif candidate > mycontext['leaderid']:
-        mycontext['leaderid'] = candidate
-      sendmessage(msgheader)
-    stopcomm(thiscommhandle)
-
-#write comment
+# Send message to the specified node
 def send_to_node(ip, message):
+  # If an exception is raised while trying to send to a node the message will
+  # be resent up to five times
   counter = 5
   while counter > 0:
     socket = None
@@ -122,11 +156,18 @@ def send_to_node(ip, message):
        return
     except Exception, e:
       if str(e).find('Connection refused') >= 0:
+        # If a connection was opened, close the socket
         if socket:
           socket.close()
         counter -= 1
+        # Halt briefly before resending
         sleep(1)
-  print getmyip() + ' Exiting' #debug
+
+  # If maximum number of retries is reached without sending successfully we
+  # can no longer guarantee correct service so the node is shut down.
+  # In a dynamic solution we would here take steps to handle the loss of the 
+  # unresponsive node
+  print getmyip() + ' Exiting'
   exitall()
 
 if callfunc == 'initialize':
@@ -134,7 +175,8 @@ if callfunc == 'initialize':
     raise Exception("Too many call arguments")
 
   # Running remotely (assuming that we pass input argument only remotely):
-  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport it'll call function board
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport
+  # it'll call function board
   elif len(callargs) == 1:
     port = int(callargs[0])
     ip = getmyip()
@@ -145,20 +187,23 @@ if callfunc == 'initialize':
     ipfile = open("ipaddresses.txt", "r")
     for line in ipfile:
       line = line.rstrip()
-      #if line != ip:
       mycontext['nodes'].append(line)
 
     myix = mycontext['nodes'].index(ip)
     mycontext['ringneighbour'] = mycontext['nodes'][myix - 1]
     
-    #mycontext['myid'] = str(500)
-    mycontext['myid'] = str( int( randomfloat() * 1000 ) )
-    mycontext['leaderid'] = mycontext['myid']
-    mycontext['leaderip'] = ip
+    mycontext['myid'] = int( randomfloat() * 1000 )
+    mycontext['leaderid'] = None
+    mycontext['leaderip'] = None
+
+    mycontext['lock'] = getlock()
 
     listencommhandle = waitforconn(ip,port,board)
 
-    send_to_node(mycontext['ringneighbour'], 'Leader:'+mycontext['myid']+'IP:'+ip)
+    # Initiate leader election by sending a message on the form 
+    # 'Leader:Initiator(my ip):candidate id(my id):candidate ip(my ip)'
+    send_to_node(mycontext['ringneighbour'], (
+      'Leader:'+ip+':'+str(mycontext['myid'])+':'+ip))
 
   # Running locally:
   # whenever we get a connection on 127.0.0.1:12345 we'll call board
