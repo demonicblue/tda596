@@ -1,0 +1,169 @@
+# Send message to all other nodes
+def send_to_nodes(message):
+  for node in mycontext['nodes']:
+    if node != getmyip():
+      #socket = openconn(node, mycontext['port'])
+      #socket.send(message)
+      #socket.close()
+      send_to_node(node, message)
+
+# Send message to the specified node
+def send_to_node(ip, message):
+  # If an exception is raised while trying to send to a node the message will
+  # be resent up to five times. This is especially useful during the initital
+  # setup where some nodes might want to start an election before its neighbor
+  # is ready to receive messages
+  counter = 5
+  while counter > 0:
+    socket = None
+    try:
+       socket = openconn(ip, mycontext['port'])
+       socket.send(message)
+       socket.close()
+       return
+    except Exception, e:
+      if str(e).find('Connection refused') >= 0:
+        # If a connection was opened, close the socket
+        if socket:
+          socket.close()
+        counter -= 1
+        # Halt briefly before resending
+        sleep(1)
+
+  # If maximum number of retries is reached without sending successfully we
+  # can no longer guarantee correct service so the node is shut down.
+  # In a dynamic solution we would here take steps to handle the loss of the 
+  # unresponsive node
+  print getmyip() + ' Exiting'
+  exitall()
+
+# Make one string from list of messages
+def get_messages():
+  msgs = ''
+  for msg in mycontext['messages']:
+    msgs += str(msg[0]) + msg[1] + '\n<br />'
+  return msgs
+
+# Generate HTML for the board with messages
+def get_html():
+  htmlresponse = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta content="text/html; charset=utf-8" http-equiv="content-type">
+  <title>Blackboard Group 31</title>
+</head>
+<body>
+  <h2> Board Content</h2>
+  <p>"""+get_messages()+"""</p>
+  <br>
+  <h3>Submit to board</h3>
+  <textarea rows="4" cols="50" name="comment" form="usrform"></textarea>
+  <form action="" id="usrform" method="post">
+  <input type="submit">
+  </form>
+</body>
+</html>
+"""
+  return htmlresponse
+
+# Generate HTTP-request with page content
+def get_raw_page():
+  htmlresponse = get_html()
+  httpresponse = "HTTP/1.1 200 OK\r\nContent-type: text/html\r\n" + \
+    "Content-length: %i\r\n\r\n%s" % (len(htmlresponse), htmlresponse)
+  return httpresponse
+
+def board(ip, port, sockobj, thiscommhandle, listencommhandle):
+  # Used to handle potential errors on recv to keep node from crashing
+  msgheader = ''
+  try:
+    msgheader = sockobj.recv(1024) # Receive message, 
+  except Exception, e:
+    print 'Exception: '+str(e)
+    stopcomm(thiscommhandle)
+
+  # React depending on message type: HTTP GET or POST, Leader election,
+  # message from leader or some other type of communication.
+
+  if msgheader.startswith( 'GET' ):
+    # Return blackboard
+    sockobj.send(get_raw_page())
+    stopcomm(thiscommhandle)
+
+  elif msgheader.startswith( 'POST' ):
+    # If this node is the leader it should add the message contained in the
+    # POST to the board and send the message to all other nodes
+
+    # Parse out comment and save
+    word = "comment="
+    message = msgheader[msgheader.find(word)+len(word):]
+
+    # Try to acquire the lock before adding mesage to the board
+    mycontext['lock'].acquire()
+    mycontext['clock'] += 1
+    mycontext['messages'].append( (mycontext['clock'], message) )
+    mycontext['lock'].release()   
+
+    # Return blackboard
+    sockobj.send(get_raw_page())
+    stopcomm(thiscommhandle)
+
+    send_to_nodes('Message'+str(mycontext['clock'])+':'+message)    
+
+    # If this node is not the leader, forward the message to the leader
+
+  # Add new message from the other node
+  elif msgheader.startswith( 'Message'):
+    # Parse out comment and save
+      word = "Message"
+      colon = msgheader.find(':')
+      clock = int( msgheader[len(word):colon] )
+      message = msgheader[colon+1:]
+
+      if mycontext['clock'] < clock:
+        mycontext['clock'] = clock
+
+      # Try to acquire the lock before adding message to the board
+      mycontext['lock'].acquire()
+
+      mycontext['messages'].append( (clock, message) )
+      mycontext['messages'].sort()
+      mycontext['lock'].release()
+
+      stopcomm(thiscommhandle)
+
+  # Other type of message
+  else:
+    print 'unkown message: '+msgheader+' from '+str(ip)+':'+str(port)
+    stopcomm(thiscommhandle)
+
+if callfunc == 'initialize':
+  if len(callargs) > 1:
+    raise Exception("Too many call arguments")
+
+  # Running remotely (assuming that we pass input argument only remotely):
+  # whenever this vessel gets a connection on its IPaddress:Clearinghouseport
+  # it'll call function board
+  elif len(callargs) == 1:
+    port = int(callargs[0])
+    ip = getmyip()
+    mycontext['port'] = port
+    mycontext['messages'] = []
+    mycontext['nodes'] = []
+
+    ipfile = open("ipaddresses.txt", "r")
+    for line in ipfile:
+      line = line.rstrip()
+      mycontext['nodes'].append(line)
+    
+    mycontext['lock'] = getlock()
+    mycontext['clock'] = 0
+
+  # Running locally:
+  # whenever we get a connection on 127.0.0.1:12345 we'll call board
+  else:
+    port = 12345
+    ip = '127.0.0.1'
+  
+  listencommhandle = waitforconn(ip,port,board)
