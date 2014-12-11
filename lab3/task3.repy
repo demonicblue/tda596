@@ -163,11 +163,38 @@ if callfunc == 'initialize':
     mycontext['messages'] = []
     mycontext['nodes'] = []
 
-    ipfile = open("ipaddresses.txt", "r")
+    ipfile = open("ipA.txt", "r")
+    nodes = []
     for line in ipfile:
       line = line.rstrip()
-      mycontext['nodes'].append(line)
+      nodes.append(line)
+    ipfile.close()
+    if ip in nodes:
+      for node in nodes:
+        mycontext['nodes'].append(node)
+
+    ipfile = open("ipB.txt", "r")
+    nodes = []
+    for line in ipfile:
+      line = line.rstrip()
+      nodes.append(line)
+    ipfile.close()
+    if ip in nodes:
+      for node in nodes:
+        mycontext['nodes'].append(node)
+
+    ipfile = open("ipC.txt", "r")
+    nodes = []
+    for line in ipfile:
+      line = line.rstrip()
+      nodes.append(line)
+    ipfile.close()
+    if ip in nodes:
+      for node in nodes:
+        mycontext['nodes'].append(node)
     
+    mycontext['nodes'] = list(set(mycontext['nodes']))
+
     # Initialize the logical clock used to order messages
     mycontext['lock'] = getlock()
     mycontext['clock'] = 0

@@ -8,8 +8,8 @@ def send_to_nodes(message):
 def send_to_node(ip, message):
   # If an exception is raised while trying to send to a node the message will
   # be resent up to five times. This is especially useful during the initital
-  # setup where some nodes might want to start an election before its neighbor
-  # is ready to receive messages
+  # setup where some nodes might want to start sending message before other nodes
+  # are ready to receive messages
   counter = 5
   while counter > 0:
     socket = None
@@ -32,13 +32,13 @@ def send_to_node(ip, message):
   # In a dynamic solution we would here take steps to handle the loss of the 
   # unresponsive node
   print getmyip() + ' Exiting'
-  exitall() # todo not relevant here?
+  exitall()
 
 # Make one string from list of messages
 def get_messages():
   msgs = ''
   for msg in mycontext['messages']:
-    msgs += str(msg[0]) + msg[1] + '\n<br />'
+    msgs += '[' + str(msg[0]) + '] ' + msg[1] + '\n<br />'
   return msgs
 
 # Generate HTML for the board with messages
@@ -80,8 +80,8 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
     print 'Exception: '+str(e)
     stopcomm(thiscommhandle)
 
-  # React depending on message type: HTTP GET or POST, Leader election,
-  # message from leader or some other type of communication.
+  # React depending on message type: HTTP GET or POST, message from other node
+  # or some other type of communication.
 
   if msgheader.startswith( 'GET' ):
     # Return blackboard
@@ -89,54 +89,74 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
     stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'POST' ):
-    # Parse out comment and save
-    word = "comment="
-    message = msgheader[msgheader.find(word)+len(word):]
-
-    # Try to acquire the lock before adding mesage to the board
-    mycontext['lock'].acquire()
-    mycontext['clock'] += 1
-    mycontext['messages'].append( (mycontext['clock'], message) )
-    
-    # Return blackboard
-    sockobj.send(get_raw_page())
-    stopcomm(thiscommhandle)
-
-    # Send new message together with clock value to all other nodes
-    send_to_nodes('Message'+str(mycontext['clock'])+':'+message)  
-
-    mycontext['lock'].release() #todo moved this here because of inconsistencies
+    process_post(msgheader, sockobj, thiscommhandle)
 
   # Add new message from the other node
-  elif msgheader.startswith( 'Message'):
-    # Parse out comment and save
-      word = "Message"
-      colon = msgheader.find(':')
-      clock = int( msgheader[len(word):colon] )
-      message = msgheader[colon+1:]    
-
-      # Try to acquire the lock before adding message to the board 
-      # or possibly modifying the clock
-      mycontext['lock'].acquire()
-
-      # If the new message has a higher clock value the receiving node
-      # updates its clock to this new value
-      if mycontext['clock'] < clock:
-        mycontext['clock'] = clock
-
-      mycontext['messages'].append( (clock, message) )
-
-      # Sort the messages in order of smallest clock value, messages with
-      # tied clock values are sorted alphabetically
-      mycontext['messages'].sort()
-      mycontext['lock'].release()
-
-      stopcomm(thiscommhandle)
+  elif msgheader.startswith( 'Message' ):
+    process_message(msgheader, thiscommhandle)    
 
   # Other type of message
   else:
     print 'unkown message: '+msgheader+' from '+str(ip)+':'+str(port)
     stopcomm(thiscommhandle)
+
+# Parses a POST, stores the included message to the board and forwards the
+# message to the other nodes
+def process_post(msgheader, sockobj, thiscommhandle):
+  # Parse out comment and save
+  word = "comment="
+  message = msgheader[msgheader.find(word)+len(word):]
+
+  # Try to acquire the lock before adding mesage to the board
+  mycontext['lock'].acquire()
+  mycontext['clock'] += 1
+  mycontext['messages'].append( (mycontext['clock'], message) )
+
+  # save snapshot of clock value
+  tempclock = mycontext['clock']
+  mycontext['lock'].release()
+  
+  # Return blackboard
+  sockobj.send(get_raw_page())
+  stopcomm(thiscommhandle)
+
+  # Send new message together with clock value to all other nodes
+  send_to_nodes('Message'+str(tempclock)+':'+message)
+
+# Parse a message from another node and save it to the board
+def process_message(msgheader, thiscommhandle):
+  # Parse out comment and save
+  word = "Message"
+  colon = msgheader.find(':')
+  clock = int( msgheader[len(word):colon] )
+  message = msgheader[colon+1:]    
+
+  # Try to acquire the lock before adding message to the board 
+  # or possibly modifying the clock
+  mycontext['lock'].acquire()
+
+  # If the new message has a higher clock value, the receiving node
+  # updates its clock to this new value
+  if mycontext['clock'] < clock:
+    mycontext['clock'] = clock
+
+  mycontext['messages'].append( (clock, message) )
+
+  # Sort the messages in order of smallest clock value, messages with
+  # tied clock values are sorted alphabetically
+  mycontext['messages'].sort()
+  mycontext['lock'].release()
+
+  stopcomm(thiscommhandle)
+
+# Read IP addresses from file and save them in mycontext
+def find_nodes(filename):
+  mycontext['nodes'] = []
+  ipfile = open(filename, "r")
+  for line in ipfile:
+    line = line.rstrip()
+    mycontext['nodes'].append(line)
+  ipfile.close()
 
 if callfunc == 'initialize':
   if len(callargs) > 1:
@@ -150,16 +170,11 @@ if callfunc == 'initialize':
     ip = getmyip()
     mycontext['port'] = port
     mycontext['messages'] = []
-    mycontext['nodes'] = []
-
-    ipfile = open("ipaddresses.txt", "r")
-    for line in ipfile:
-      line = line.rstrip()
-      mycontext['nodes'].append(line)
-    
-    # Initialize the logical clock used to order messages
     mycontext['lock'] = getlock()
+    # Initialize the logical clock used to order messages    
     mycontext['clock'] = 0
+
+    find_nodes("ipaddresses.txt")
 
   # Running locally:
   # whenever we get a connection on 127.0.0.1:12345 we'll call board
