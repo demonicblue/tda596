@@ -1,8 +1,54 @@
+def lock_remote_nodes():
+
+  for node in mycontext['Wnodes']:
+    locked = False
+    while not locked:
+      socket = openconn(node, mycontext['port'])
+      socket.send('Lock')
+      print "Sent lock to " + node 
+      recvmsg = ''
+      try:
+        recvmsg = socket.recv(1024) # Receive message,
+      except Exception, e:
+        print 'Exception: '+str(e)
+
+      if recvmsg == "Ok":
+          locked = True
+          print "Lock acquired on " + node
+      else:
+        sleep(1)
+
+def unlock_remote_nodes():
+  send_to_nodes("Unlock")
+
+def write_nodes():
+  send_to_nodes("Write" + '%'.join(mycontext['messages']))
+
+def read_nodes():
+
+  for node in mycontext['Wnodes']:
+    socket = openconn(node, mycontext['port'])
+    socket.send('Read')
+
+    msglist = []
+    recvmsg = ''
+    try:
+      recvmsg = socket.recv(1024) # Receive message,
+    except Exception, e:
+      print 'Exception: '+str(e)
+      continue
+
+    msglist = recvmsg.split('%')
+    if len(mycontext['messages']) < len(msglist):
+      mycontext['messages'] = msglist
+
+
+
 # Send message to all other nodes
 def send_to_nodes(message):
-  for node in mycontext['nodes']:
-    if node != getmyip():
-      send_to_node(node, message)
+  for node in mycontext['Wnodes']:
+    #if node != getmyip():
+    send_to_node(node, message)
 
 # Send message to the specified node
 def send_to_node(ip, message):
@@ -36,11 +82,10 @@ def send_to_node(ip, message):
 
 # Make one string from list of messages
 def get_messages():
-  msgs = ''
-  for msg in mycontext['messages']:
-    mycontext['lock'].acquire()
-    msgs += '[' + str(msg[0]) + '] ' + msg[1] + '\n<br />'
-    mycontext['lock'].release()
+  print "Trying to acquire lock in get_messages"
+  mycontext['lock'].acquire()
+  msgs = "\n<br />".join(mycontext['messages'])
+  mycontext['lock'].release()
   return msgs
 
 # Generate HTML for the board with messages
@@ -87,15 +132,33 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
 
   if msgheader.startswith( 'GET' ):
     # Return blackboard
+    read_nodes()
     sockobj.send(get_raw_page())
     stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'POST' ):
     process_post(msgheader, sockobj, thiscommhandle)
 
-  # Add new message from the other node
-  elif msgheader.startswith( 'Message' ):
-    process_message(msgheader, thiscommhandle)    
+  elif msgheader.startswith( 'Read' ):
+    sockobj.send( '%'.join( mycontext['messages'] ) )
+    stopcomm(thiscommhandle)
+
+  elif msgheader.startswith( 'Write' ):
+    word = 'Write'
+    mycontext['messages'] = msgheader[msgheader.find(word)+len(word):].split("%")
+
+  elif msgheader.startswith( 'Lock' ):
+    if mycontext['lock'].acquire(False):
+      sockobj.send('Ok')
+    else:
+      sockobj.send('No')
+    stopcomm(thiscommhandle)
+
+  elif msgheader.startswith( 'Unlock' ):
+    print getmyip() + ": unlocked!"
+    mycontext['lock'].release()
+    stopcomm(thiscommhandle)
+
 
   # Other type of message
   else:
@@ -109,21 +172,28 @@ def process_post(msgheader, sockobj, thiscommhandle):
   word = "comment="
   message = msgheader[msgheader.find(word)+len(word):]
 
+  print "Trying to lock remote nodes"
   # Try to acquire the lock before adding mesage to the board
-  mycontext['lock'].acquire()
-  mycontext['clock'] += 1
-  mycontext['messages'].append( (mycontext['clock'], message) )
+  lock_remote_nodes()
+  print "Locked nodes"
 
-  # save snapshot of clock value
-  tempclock = mycontext['clock']
-  mycontext['lock'].release()
+  read_nodes()
+  print "Read from nodes"
+
+  mycontext['messages'].append( message )
+
+  write_nodes()
+  print "Wrote to nodes"
+
+  unlock_remote_nodes()
+  print "Unlocked nodes"
   
   # Return blackboard
   sockobj.send(get_raw_page())
   stopcomm(thiscommhandle)
 
   # Send new message together with clock value to all other nodes
-  send_to_nodes('Message'+str(tempclock)+':'+message)
+  #send_to_nodes('Message'+str(tempclock)+':'+message)
 
 # Parse a message from another node and save it to the board
 def process_message(msgheader, thiscommhandle):
@@ -137,12 +207,7 @@ def process_message(msgheader, thiscommhandle):
   # or possibly modifying the clock
   mycontext['lock'].acquire()
 
-  # If the new message has a higher clock value, the receiving node
-  # updates its clock to this new value
-  if mycontext['clock'] < clock:
-    mycontext['clock'] = clock
-
-  mycontext['messages'].append( (clock, message) )
+  mycontext['messages'].append( message )
 
   # Sort the messages in order of smallest clock value, messages with
   # tied clock values are sorted alphabetically
@@ -162,14 +227,19 @@ def find_nodes(filename):
 
   mycontext['nodes'].sort()
 
-def find_read_nodes():
   # Find the index of this node in the list of node ip addresses and choose
   # the one preceding it as its neighbor
   myix = mycontext['nodes'].index(ip)
+  mycontext['Wnodes'] = []
 
-  W = len(mycontext['nodes'])/2 + 1
+  N = len(mycontext['nodes'])
+  W = N/2 + 1
   
-  for i in range(R)
+  for i in range(W):
+    index = (i+myix) % N
+    mycontext['Wnodes'].append( mycontext['nodes'][index] )
+
+  mycontext['Wnodes'].sort()
 
 if callfunc == 'initialize':
   if len(callargs) > 1:
