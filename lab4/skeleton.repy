@@ -1,3 +1,5 @@
+# Send lock requests to remote nodes and wait for reply.
+# Returns once all nodes in Wnodes have replied "Ok"
 def lock_remote_nodes():
 
   for node in mycontext['Wnodes']:
@@ -5,8 +7,9 @@ def lock_remote_nodes():
     while not locked:
       socket = openconn(node, mycontext['port'])
       socket.send('Lock')
-      print "Sent lock to " + node 
+
       recvmsg = ''
+
       try:
         recvmsg = socket.recv(1024) # Receive message,
       except Exception, e:
@@ -14,16 +17,22 @@ def lock_remote_nodes():
 
       if recvmsg == "Ok":
           locked = True
-          print "Lock acquired on " + node
+
       else:
         sleep(1)
 
+# Send out unlock requests to remote nodes
+# Don't wait for reply
 def unlock_remote_nodes():
   send_to_nodes("Unlock")
 
+# Write the board to remote nodes
 def write_nodes():
   send_to_nodes("Write" + '%'.join(mycontext['messages']))
 
+# Request the board of remote nodes and compare to its own.
+# If remote board has a higher revision (length is longer than local copy),
+# then replace the local copy.
 def read_nodes():
 
   for node in mycontext['Wnodes']:
@@ -39,15 +48,15 @@ def read_nodes():
       continue
 
     msglist = recvmsg.split('%')
+
     if len(mycontext['messages']) < len(msglist):
       mycontext['messages'] = msglist
 
 
 
-# Send message to all other nodes
+# Send message to all Wnodes
 def send_to_nodes(message):
   for node in mycontext['Wnodes']:
-    #if node != getmyip():
     send_to_node(node, message)
 
 # Send message to the specified node
@@ -82,7 +91,6 @@ def send_to_node(ip, message):
 
 # Make one string from list of messages
 def get_messages():
-  print "Trying to acquire lock in get_messages"
   mycontext['lock'].acquire()
   msgs = "\n<br />".join(mycontext['messages'])
   mycontext['lock'].release()
@@ -143,6 +151,7 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
     sockobj.send( '%'.join( mycontext['messages'] ) )
     stopcomm(thiscommhandle)
 
+  # Replace local copy of the board with the one received
   elif msgheader.startswith( 'Write' ):
     word = 'Write'
     mycontext['messages'] = msgheader[msgheader.find(word)+len(word):].split("%")
@@ -152,11 +161,12 @@ def board(ip, port, sockobj, thiscommhandle, listencommhandle):
       sockobj.send('Ok')
     else:
       sockobj.send('No')
+
     stopcomm(thiscommhandle)
 
   elif msgheader.startswith( 'Unlock' ):
-    print getmyip() + ": unlocked!"
     mycontext['lock'].release()
+
     stopcomm(thiscommhandle)
 
 
@@ -172,48 +182,19 @@ def process_post(msgheader, sockobj, thiscommhandle):
   word = "comment="
   message = msgheader[msgheader.find(word)+len(word):]
 
-  print "Trying to lock remote nodes"
-  # Try to acquire the lock before adding mesage to the board
+  # Try to acquire the lock of remote nodes before adding mesage to the board
   lock_remote_nodes()
-  print "Locked nodes"
-
+  # Read to make sure we have the latest copy
   read_nodes()
-  print "Read from nodes"
 
   mycontext['messages'].append( message )
-
+  # Propagate the new board
   write_nodes()
-  print "Wrote to nodes"
 
   unlock_remote_nodes()
-  print "Unlocked nodes"
   
   # Return blackboard
   sockobj.send(get_raw_page())
-  stopcomm(thiscommhandle)
-
-  # Send new message together with clock value to all other nodes
-  #send_to_nodes('Message'+str(tempclock)+':'+message)
-
-# Parse a message from another node and save it to the board
-def process_message(msgheader, thiscommhandle):
-  # Parse out comment and save
-  word = "Message"
-  colon = msgheader.find(':')
-  clock = int( msgheader[len(word):colon] )
-  message = msgheader[colon+1:]    
-
-  # Try to acquire the lock before adding message to the board 
-  # or possibly modifying the clock
-  mycontext['lock'].acquire()
-
-  mycontext['messages'].append( message )
-
-  # Sort the messages in order of smallest clock value, messages with
-  # tied clock values are sorted alphabetically
-  mycontext['messages'].sort()
-  mycontext['lock'].release()
-
   stopcomm(thiscommhandle)
 
 # Read IP addresses from file and save them in mycontext
@@ -228,7 +209,7 @@ def find_nodes(filename):
   mycontext['nodes'].sort()
 
   # Find the index of this node in the list of node ip addresses and choose
-  # the one preceding it as its neighbor
+  # the next W nodes to write and read from
   myix = mycontext['nodes'].index(ip)
   mycontext['Wnodes'] = []
 
@@ -236,10 +217,13 @@ def find_nodes(filename):
   W = N/2 + 1
   
   for i in range(W):
-    index = (i+myix) % N
+    index = (i+myix) % N # Wrap around the list
     mycontext['Wnodes'].append( mycontext['nodes'][index] )
 
+  # Sort so that the highest ordered node is always contacted first
   mycontext['Wnodes'].sort()
+
+
 
 if callfunc == 'initialize':
   if len(callargs) > 1:
@@ -254,8 +238,6 @@ if callfunc == 'initialize':
     mycontext['port'] = port
     mycontext['messages'] = []
     mycontext['lock'] = getlock()
-    # Initialize the logical clock used to order messages    
-    mycontext['clock'] = 0
 
     find_nodes("ipaddresses.txt")
 
